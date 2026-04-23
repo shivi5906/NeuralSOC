@@ -1,0 +1,3 @@
+#ignoring the big files 
+data/
+venv/
