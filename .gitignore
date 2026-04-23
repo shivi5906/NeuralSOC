@@ -1,3 +1,4 @@
-#ignoring the big files 
+#ignoring the big files
 data/
 venv/
+notebooks/eda_outputs
