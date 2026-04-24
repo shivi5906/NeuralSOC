@@ -61,6 +61,7 @@ def build_bilstm_ids(
     l2_reg: float = 1e-4,
     learning_rate: float = 3e-4,
     label_smoothing: float = 0.05,   # combats noisy CICIDS labels
+    use_top2_metric: bool = True,    # set False when num_classes < 3 (binary)
 ) -> Model:
     """
     BiLSTM + Temporal Attention for CICIDS-2017 intrusion detection.
@@ -136,10 +137,10 @@ def build_bilstm_ids(
             weight_decay=l2_reg,
         ),
         loss=tf.keras.losses.SparseCategoricalCrossentropy(),
-        metrics=[
-            "accuracy",
-            tf.keras.metrics.SparseTopKCategoricalAccuracy(k=2, name="top2_acc"),
-        ],
+        metrics=(
+            ["accuracy", tf.keras.metrics.SparseTopKCategoricalAccuracy(k=2, name="top2_acc")]
+            if use_top2_metric else ["accuracy"]
+        ),
     )
     return model
 
