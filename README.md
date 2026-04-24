@@ -24,7 +24,7 @@ Traditional intrusion detection systems are black boxes — they fire an alert, 
 
 | Capability | Description |
 |---|---|
-| **Ensemble Detection** | 3 deep learning models (CNN + BiLSTM + Transformer) vote on every packet flow |
+| **Ensemble Detection** | 4 deep learning models (CNN + BiLSTM + Transformer + LSTM Autoencoder) vote on every packet flow |
 | **Explainable AI** | SHAP waterfall chart per alert — no black boxes |
 | **Zero-Day Sensing** | LSTM Autoencoder flags novel attacks it has never seen |
 | **Kill Chain Mapping** | Every alert mapped to a MITRE ATT&CK stage automatically |
@@ -39,21 +39,21 @@ Traditional intrusion detection systems are black boxes — they fire an alert, 
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    STREAMLIT DASHBOARD                   │
-│   Alert Feed │ SHAP Panel │ Geo Map │ Kill Chain │ IR    │
+│                    STREAMLIT DASHBOARD                  │
+│   Alert Feed │ SHAP Panel │ Geo Map │ Kill Chain │ IR   │
 └──────────────────────────┬──────────────────────────────┘
                            │ REST API
 ┌──────────────────────────▼──────────────────────────────┐
-│                     FASTAPI BACKEND                      │
+│                     FASTAPI BACKEND                     │
 │  /predict  /simulate  /enrich  /mitre  /respond         │
 └──────────────────────────┬──────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────┐
-│                      ML ENGINE                           │
-│                                                          │
-│  ┌──────────┐  ┌──────────┐  ┌─────────────┐           │
-│  │  1D-CNN  │  │  BiLSTM  │  │ Transformer │           │
-│  └────┬─────┘  └────┬─────┘  └──────┬──────┘           │
+│                      ML ENGINE                          │
+│                                                         │
+│  ┌──────────┐  ┌──────────┐  ┌─────────────┐            │
+│  │  1D-CNN  │  │  BiLSTM  │  │ Transformer │            │
+│  └────┬─────┘  └────┬─────┘  └──────┬──────┘            │
 │       └─────────────┼───────────────┘                   │
 │               ┌─────▼──────┐                            │
 │               │ XGBoost    │  ← Meta-learner            │
@@ -169,7 +169,7 @@ neuralsoc/
 
 ### 1. Clone the repo
 ```bash
-git clone https://github.com/yourusername/neuralsoc.git
+git clone https://github.com/shivi5906/neuralsoc.git
 cd neuralsoc
 ```
 
