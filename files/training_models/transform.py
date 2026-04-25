@@ -298,63 +298,78 @@ def train(cfg):
     out = Path(cfg["output_dir"])
     out.mkdir(parents=True, exist_ok=True)
 
+    # 1. Load and Preprocess
     (X_tr, X_val, X_te,
      y_tr, y_val, y_te,
      scaler, class_weight, num_classes,
      feature_cols, label_map) = load_and_preprocess(cfg)
 
-    # ── apply mixup to training data ──
     alpha = cfg["mixup_alpha"]
+    
+    # 2. Data Pipeline Logic (The Fix)
     if alpha > 0:
+        print(f"✨ Mixup enabled (alpha={alpha}). Using CategoricalCrossentropy.")
+        
+        # One-hot encode both sets for CategoricalCrossentropy
         y_tr_oh = tf.keras.utils.to_categorical(y_tr, num_classes).astype(np.float32)
+        y_val_oh = tf.keras.utils.to_categorical(y_val, num_classes).astype(np.float32)
+        
+        # Apply Mixup to training data
         X_tr_mix, y_tr_mix = mixup_batch(X_tr, y_tr_oh, alpha)
+        
         train_dataset = (
             tf.data.Dataset.from_tensor_slices((X_tr_mix, y_tr_mix))
             .shuffle(10000)
             .batch(cfg["batch_size"])
             .prefetch(tf.data.AUTOTUNE)
         )
+        
+        val_dataset = (
+            tf.data.Dataset.from_tensor_slices((X_val, y_val_oh))
+            .batch(cfg["batch_size"] * 2)
+            .prefetch(tf.data.AUTOTUNE)
+        )
+        
         loss_fn = keras.losses.CategoricalCrossentropy(
             label_smoothing=cfg["label_smoothing"]
         )
-        # class_weight doesn't work with one-hot targets in tf.data; baked into mixup
-        cw_train = None
+        metric = keras.metrics.CategoricalAccuracy(name="acc")
+        cw_train = None  # Class weights are mathematically tricky with Mixup
     else:
+        print("🚀 Mixup disabled. Using SparseCategoricalCrossentropy.")
         train_dataset = (
             tf.data.Dataset.from_tensor_slices((X_tr, y_tr))
             .shuffle(10000)
             .batch(cfg["batch_size"])
             .prefetch(tf.data.AUTOTUNE)
         )
-        loss_fn  = keras.losses.SparseCategoricalCrossentropy(
-            from_logits=False
+        
+        val_dataset = (
+            tf.data.Dataset.from_tensor_slices((X_val, y_val))
+            .batch(cfg["batch_size"] * 2)
+            .prefetch(tf.data.AUTOTUNE)
         )
+        
+        loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=False)
+        metric = keras.metrics.SparseCategoricalAccuracy(name="acc")
         cw_train = class_weight
 
-    val_dataset = (
-        tf.data.Dataset.from_tensor_slices((X_val, y_val))
-        .batch(cfg["batch_size"] * 2)
-        .prefetch(tf.data.AUTOTUNE)
-    )
-
-    # ── build model ──
+    # 3. Build and Compile Model
     model = build_model(X_tr.shape[1], num_classes, cfg)
-    model.summary()
-
+    
+    # Use AdamW as defined in your config
     optimizer = keras.optimizers.AdamW(
         learning_rate=cfg["lr"],
         weight_decay=cfg["weight_decay"]
     )
 
-    metric = (keras.metrics.CategoricalAccuracy(name="acc")
-              if alpha > 0 else
-              keras.metrics.SparseCategoricalAccuracy(name="acc"))
-
     model.compile(optimizer=optimizer, loss=loss_fn, metrics=[metric])
 
+    # 4. Callbacks
     model_path = str(out / "best_model.keras")
-
+    
     callbacks = [
+        # Note: y_val remains integers here because f1_score expects class indices
         MacroF1Callback(val_data=(X_val, y_val),
                         patience=cfg["patience"],
                         model_path=model_path),
@@ -368,6 +383,7 @@ def train(cfg):
         keras.callbacks.CSVLogger(str(out / "history.csv")),
     ]
 
+    # 5. Training Loop
     print("─" * 60)
     print(f"Training for up to {cfg['epochs']} epochs ...")
     print("─" * 60)
@@ -381,33 +397,33 @@ def train(cfg):
         verbose=1,
     )
 
-    # ── final evaluation ──
+    # 6. Final Evaluation (Reloading the best weights)
     print("\n" + "=" * 60)
-    print("📊  Loading best model → evaluating on TEST set ...")
+    print("📊 Loading best model → evaluating on TEST set ...")
     best_model = keras.models.load_model(model_path)
 
     y_pred = best_model.predict(X_te, batch_size=cfg["batch_size"] * 2,
                                 verbose=0).argmax(axis=1)
+    
     acc = accuracy_score(y_te, y_pred)
     f1  = f1_score(y_te, y_pred, average="macro", zero_division=0)
+    
     print(f"\n   Test Accuracy : {acc*100:.3f}%")
     print(f"   Test F1 Macro : {f1:.4f}\n")
     print("Classification Report:")
     print(classification_report(y_te, y_pred, target_names=label_map, digits=4))
 
-    # ── save artefacts ──
-    with open(out / "scaler.pkl",        "wb") as f: pickle.dump(scaler, f)
-    with open(out / "feature_cols.json", "w")  as f: json.dump(feature_cols, f)
-    with open(out / "label_map.json",    "w")  as f: json.dump(label_map, f)
-    with open(out / "config.json",       "w")  as f: json.dump(cfg, f, indent=2)
-    with open(out / "model_meta.json",   "w")  as f:
+    # 7. Save Artefacts
+    with open(out / "scaler.pkl", "wb") as f: pickle.dump(scaler, f)
+    with open(out / "feature_cols.json", "w") as f: json.dump(feature_cols, f)
+    with open(out / "label_map.json", "w") as f: json.dump(label_map, f)
+    with open(out / "config.json", "w") as f: json.dump(cfg, f, indent=2)
+    with open(out / "model_meta.json", "w") as f:
         json.dump({"in_features": X_tr.shape[1],
                    "num_classes": num_classes}, f, indent=2)
 
-    print(f"\n✅  All artefacts saved to '{out}/'")
-    print(f"    best_model.keras | scaler.pkl | feature_cols.json | label_map.json")
+    print(f"\n✅ All artefacts saved to '{out}/'")
     return best_model
-
 
 # ─────────────────────────────────────────────
 #  INFERENCE API
