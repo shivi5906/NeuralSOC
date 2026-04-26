@@ -34,7 +34,7 @@ from sklearn.metrics import classification_report, confusion_matrix, f1_score
 from sklearn.preprocessing import RobustScaler, LabelEncoder
 from sklearn.utils.class_weight import compute_class_weight
 
-from models_name.bilstm import build_bilstm_ids
+from bilstm import build_bilstm_ids
 
 # ── Reproducibility ────────────────────────────────────────────────────────────
 SEED = 42
