@@ -2,19 +2,21 @@
 Transformer-based Network Intrusion Classifier — TensorFlow / Keras
 Wednesday DoS Dataset (CICIDS2017)
 ======================================================================
-Single file: model definition + training + evaluation + inference
+Optimised for Google Colab (T4 / A100 / CPU fallback)
 
-Changes from original (architecture kept intact):
-  - Removed Mixup entirely — was stacking too much regularisation on top
-    of label smoothing + dropout + weight decay, causing slow convergence
-  - Epochs reduced 40 → 20, patience 7 → 5 (stops faster when flat)
-  - Batch size raised 2048 → 4096 (fewer steps/epoch = faster wall clock)
-  - Dropout reduced 0.3 → 0.2 (was over-regularising with 3 other methods)
-  - Label smoothing reduced 0.05 → 0.03
-  - SparseCategoricalCrossentropy used throughout (simpler, no one-hot needed)
-  - Class weights always applied (was skipped with Mixup)
-  - Cleaned up data pipeline (single branch, no alpha conditional split)
+Setup in Colab:
+    1. Runtime → Change runtime type → GPU (T4 recommended)
+    2. Mount Drive if loading data from there (see QUICK START below)
+    3. !pip install -q tensorflow scikit-learn pandas
+
+QUICK START (first cell in your notebook):
+    from google.colab import drive
+    drive.mount('/content/drive')
+    # then set DATA_PATH below to your Drive path
 """
+
+# ── Colab: uncomment to install if needed ──────────────────────────
+# !pip install -q tensorflow scikit-learn pandas
 
 import os
 import json
@@ -37,42 +39,93 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import classification_report, f1_score, accuracy_score
 from sklearn.utils.class_weight import compute_class_weight
 
+
+# ─────────────────────────────────────────────
+#  GPU SETUP  (Colab-safe)
+# ─────────────────────────────────────────────
+def setup_gpu():
+    """Configure GPU memory growth to avoid OOM on Colab's shared GPU."""
+    gpus = tf.config.list_physical_devices("GPU")
+    if gpus:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        print(f"✅  GPU detected: {[g.name for g in gpus]}")
+    else:
+        print("⚠️  No GPU found — running on CPU (will be slow)")
+    print(f"    TensorFlow {tf.__version__}\n")
+
+setup_gpu()
+
+
+# ─────────────────────────────────────────────
+#  COLAB PATH HELPERS
+# ─────────────────────────────────────────────
+def get_data_path(filename: str = "Wed_DoS.csv") -> str:
+    """
+    Resolves the data path in order of preference:
+      1. /content/drive/MyDrive/  (Google Drive mount)
+      2. /content/                (direct Colab upload)
+      3. current working directory (local run / custom path)
+    """
+    candidates = [
+        f"/content/drive/MyDrive/{filename}",
+        f"/content/{filename}",
+        filename,
+    ]
+    for p in candidates:
+        if Path(p).exists():
+            print(f"📂  Found data at: {p}")
+            return p
+    # Default — user must update manually
+    print(f"⚠️  Data file not found in common locations.")
+    print(f"    Set DATA_PATH manually or upload to /content/")
+    return f"/content/{filename}"
+
+
 # ─────────────────────────────────────────────
 #  CONFIG
 # ─────────────────────────────────────────────
+
+# ── ✏️  EDIT THESE FOR YOUR COLAB SESSION ─────
+DATA_PATH  = get_data_path("Wed_DoS.csv")   # or full path to your file
+OUTPUT_DIR = "/content/dos_keras_output"    # saved inside Colab (ephemeral)
+# To persist outputs → use "/content/drive/MyDrive/dos_keras_output"
+# ──────────────────────────────────────────────
+
 DEFAULT_CONFIG = {
     # paths
-    "data_path":        r"X:\dev\neuralSOC\NeuralSOC\data\processed\Wed_DoS.csv",
-    "output_dir":       "dos_keras_output",
+    "data_path":       DATA_PATH,
+    "output_dir":      OUTPUT_DIR,
 
     # data
-    "test_size":        0.15,
-    "val_size":         0.15,
-    "random_seed":      42,
+    "test_size":       0.15,
+    "val_size":        0.15,
+    "random_seed":     42,
 
-    # model (unchanged)
-    "d_model":          128,
-    "n_heads":          8,
-    "n_layers":         3,
-    "ffn_dim":          256,
-    "dropout":          0.2,       # ↓ from 0.3 — label smoothing + weight decay already regularise
-    "n_tokens":         4,
+    # model
+    "d_model":         128,
+    "n_heads":         8,
+    "n_layers":        3,
+    "ffn_dim":         256,
+    "dropout":         0.2,
+    "n_tokens":        4,
 
     # training
-    "epochs":           20,        # ↓ from 40 — early stopping handles the rest
-    "batch_size":       4096,      # ↑ from 2048 — fewer steps/epoch, faster wall clock
-    "lr":               3e-4,
-    "weight_decay":     1e-4,
-    "label_smoothing":  0.03,      # ↓ from 0.05 — lighter touch
-    "patience":         5,         # ↓ from 7 — bail earlier when val-F1 is flat
-    "lr_patience":      3,
-    "lr_factor":        0.5,
-    "min_lr":           1e-6,
+    # batch_size: 2048 is safer on Colab T4 (15GB VRAM); raise to 4096 on A100
+    "epochs":          20,
+    "batch_size":      2048,
+    "lr":              3e-4,
+    "weight_decay":    1e-4,
+    "label_smoothing": 0.03,
+    "patience":        5,
+    "lr_patience":     3,
+    "lr_factor":       0.5,
+    "min_lr":          1e-6,
 }
 
 
 # ─────────────────────────────────────────────
-#  MODEL BLOCKS  (identical to original)
+#  MODEL BLOCKS
 # ─────────────────────────────────────────────
 def feature_embedding_block(x, d_model, dropout, l2):
     mid = d_model * 2
@@ -155,7 +208,6 @@ def build_model(in_features, num_classes, cfg):
         seq = transformer_block(seq, d_model, n_heads, ffn_dim, dropout, l2)
 
     seq = layers.LayerNormalization(epsilon=1e-6)(seq)
-
     cls_out = layers.Lambda(lambda z: z[:, 0], name="cls_extract")(seq)
     cls_out = layers.Dropout(dropout)(cls_out)
     cls_out = layers.Dense(d_model // 2, activation="gelu",
@@ -181,12 +233,27 @@ def load_and_preprocess(cfg):
     print(f"    Loaded {len(df):,} rows × {df.shape[1]} cols  "
           f"({df.memory_usage(deep=True).sum()/1e6:.0f} MB)")
 
+    df.columns = df.columns.str.strip()
+
+    if "label_enc" not in df.columns and "label enc" in df.columns:
+        df.rename(columns={"label enc": "label_enc"}, inplace=True)
+
     if "label_enc" not in df.columns:
-        cats = df["Label"].astype("category")
+        label_col = next((c for c in df.columns if c.lower() == "label"), None)
+        if label_col is None:
+            raise ValueError("No 'Label' or 'label_enc' column found in CSV.")
+        cats = df[label_col].astype("category")
         df["label_enc"] = cats.cat.codes.astype("int32")
         print(f"    Auto-encoded labels: {dict(enumerate(cats.cat.categories))}")
 
-    feature_cols = [c for c in df.columns if c not in ("Label", "label_enc")]
+    label_text_col = next((c for c in df.columns
+                           if c.lower() == "label" and c != "label_enc"), None)
+
+    drop_cols = {"label_enc"}
+    if label_text_col:
+        drop_cols.add(label_text_col)
+    feature_cols = [c for c in df.columns if c not in drop_cols]
+
     X = np.nan_to_num(
         df[feature_cols].values.astype(np.float32),
         nan=0.0, posinf=0.0, neginf=0.0
@@ -194,13 +261,17 @@ def load_and_preprocess(cfg):
     y = df["label_enc"].values.astype(np.int32)
 
     num_classes = int(y.max()) + 1
-    label_map   = (df[["label_enc", "Label"]]
-                   .drop_duplicates()
-                   .sort_values("label_enc")["Label"]
-                   .tolist())
+    if label_text_col:
+        label_map = (df[["label_enc", label_text_col]]
+                     .drop_duplicates()
+                     .sort_values("label_enc")[label_text_col]
+                     .tolist())
+    else:
+        label_map = [str(i) for i in range(num_classes)]
 
     print(f"    Features: {X.shape[1]}  |  Classes: {num_classes}")
-    print(f"    Class distribution:\n{pd.Series(df['Label'].values).value_counts().to_string()}\n")
+    print(f"    Class distribution:\n"
+          f"{pd.Series(df[label_text_col].values if label_text_col else y).value_counts().to_string()}\n")
 
     X_tmp, X_test, y_tmp, y_test = train_test_split(
         X, y, test_size=cfg["test_size"],
@@ -260,6 +331,26 @@ class MacroF1Callback(keras.callbacks.Callback):
 
 
 # ─────────────────────────────────────────────
+#  COLAB SESSION SAVER
+# ─────────────────────────────────────────────
+def maybe_zip_to_drive(output_dir: str):
+    """
+    Optionally zip output artefacts to Google Drive so they survive
+    Colab session resets. Silently skips if Drive isn't mounted.
+    """
+    drive_root = Path("/content/drive/MyDrive")
+    if not drive_root.exists():
+        print("ℹ️  Drive not mounted — artefacts saved to /content/ only (ephemeral).")
+        print("   To persist: mount Drive and set OUTPUT_DIR to a Drive path.")
+        return
+
+    import shutil
+    zip_path = str(drive_root / "dos_keras_output")
+    shutil.make_archive(zip_path, "zip", output_dir)
+    print(f"📦  Artefacts zipped → {zip_path}.zip (in your Google Drive)")
+
+
+# ─────────────────────────────────────────────
 #  TRAINING
 # ─────────────────────────────────────────────
 def train(cfg):
@@ -271,15 +362,17 @@ def train(cfg):
      scaler, class_weight, num_classes,
      feature_cols, label_map) = load_and_preprocess(cfg)
 
-    # Single clean pipeline — no Mixup branch
+    y_tr_oh  = keras.utils.to_categorical(y_tr,  num_classes).astype(np.float32)
+    y_val_oh = keras.utils.to_categorical(y_val, num_classes).astype(np.float32)
+
     train_ds = (
-        tf.data.Dataset.from_tensor_slices((X_tr, y_tr))
+        tf.data.Dataset.from_tensor_slices((X_tr, y_tr_oh))
         .shuffle(10_000)
         .batch(cfg["batch_size"])
         .prefetch(tf.data.AUTOTUNE)
     )
     val_ds = (
-        tf.data.Dataset.from_tensor_slices((X_val, y_val))
+        tf.data.Dataset.from_tensor_slices((X_val, y_val_oh))
         .batch(cfg["batch_size"] * 2)
         .prefetch(tf.data.AUTOTUNE)
     )
@@ -290,10 +383,10 @@ def train(cfg):
             learning_rate=cfg["lr"],
             weight_decay=cfg["weight_decay"]
         ),
-        loss=keras.losses.SparseCategoricalCrossentropy(
+        loss=keras.losses.CategoricalCrossentropy(
             label_smoothing=cfg["label_smoothing"]
         ),
-        metrics=[keras.metrics.SparseCategoricalAccuracy(name="acc")]
+        metrics=[keras.metrics.CategoricalAccuracy(name="acc")]
     )
     model.summary(line_length=80)
 
@@ -310,11 +403,19 @@ def train(cfg):
             verbose=1
         ),
         keras.callbacks.CSVLogger(str(out / "history.csv")),
+        # Colab sessions can disconnect — TensorBoard helps monitor remotely
+        keras.callbacks.TensorBoard(
+            log_dir=str(out / "tb_logs"),
+            histogram_freq=0,       # 0 = faster; set 1 for weight histograms
+            update_freq="epoch"
+        ),
     ]
 
     print("─" * 60)
     print(f"Training — up to {cfg['epochs']} epochs, "
           f"early stop patience {cfg['patience']}")
+    print(f"Batch size: {cfg['batch_size']}  |  GPU: "
+          f"{bool(tf.config.list_physical_devices('GPU'))}")
     print("─" * 60)
 
     model.fit(
@@ -322,7 +423,7 @@ def train(cfg):
         epochs=cfg["epochs"],
         validation_data=val_ds,
         callbacks=callbacks,
-        class_weight=class_weight,   # always applied now
+        class_weight=class_weight,
         verbose=1,
     )
 
@@ -349,6 +450,10 @@ def train(cfg):
                    "num_classes": num_classes}, f, indent=2)
 
     print(f"\n✅  Artefacts saved to '{out}/'")
+
+    # ── optionally persist to Drive ──
+    maybe_zip_to_drive(str(out))
+
     return best
 
 
@@ -360,11 +465,11 @@ class DoSClassifier:
     Real-world inference wrapper.
 
     Usage:
-        clf   = DoSClassifier("dos_keras_output")
+        clf   = DoSClassifier("/content/dos_keras_output")
         preds = clf.predict(df)          # list of label strings
         probs = clf.predict_proba(df)    # numpy array (N, num_classes)
     """
-    def __init__(self, output_dir: str = "dos_keras_output"):
+    def __init__(self, output_dir: str = "/content/dos_keras_output"):
         out = Path(output_dir)
         self.model  = keras.models.load_model(str(out / "best_model.keras"))
         with open(out / "scaler.pkl",        "rb") as f: self.scaler = pickle.load(f)
@@ -387,7 +492,7 @@ class DoSClassifier:
 
 
 # ─────────────────────────────────────────────
-#  CLI
+#  CLI  (for local use; in Colab just call train(DEFAULT_CONFIG))
 # ─────────────────────────────────────────────
 def parse_args():
     p = argparse.ArgumentParser(description="DoS Transformer — TensorFlow/Keras")
@@ -404,32 +509,48 @@ def parse_args():
     return p.parse_args()
 
 
+# ─────────────────────────────────────────────
+#  ENTRY POINT
+#  In Colab: just run   train(DEFAULT_CONFIG)
+#  As script: python dos_transformer_colab.py --mode train
+# ─────────────────────────────────────────────
 if __name__ == "__main__":
-    args = parse_args()
-    cfg  = DEFAULT_CONFIG.copy()
-    cfg.update({
-        "data_path":  args.data,
-        "output_dir": args.output_dir,
-        "epochs":     args.epochs,
-        "batch_size": args.batch_size,
-        "lr":         args.lr,
-        "d_model":    args.d_model,
-        "n_layers":   args.n_layers,
-        "dropout":    args.dropout,
-    })
+    # Detect if running inside a Colab notebook
+    try:
+        import google.colab  # noqa
+        IN_COLAB = True
+    except ImportError:
+        IN_COLAB = False
 
-    if args.mode == "train":
-        train(cfg)
-    elif args.mode == "predict":
-        if args.input is None:
-            raise ValueError("--input must be provided in predict mode")
-        clf  = DoSClassifier(args.output_dir)
-        df   = pd.read_csv(args.input)
-        preds = clf.predict(df)
-        probs = clf.predict_proba(df)
-        df["prediction"] = preds
-        df["confidence"] = probs.max(axis=1)
-        out_path = Path(args.output_dir) / "predictions.csv"
-        df.to_csv(out_path, index=False)
-        print(f"\nPredictions saved → {out_path}")
-        print(df[["prediction", "confidence"]].value_counts().head(20).to_string())
+    if IN_COLAB:
+        # In Colab, skip argparse and run directly
+        train(DEFAULT_CONFIG)
+    else:
+        args = parse_args()
+        cfg  = DEFAULT_CONFIG.copy()
+        cfg.update({
+            "data_path":  args.data,
+            "output_dir": args.output_dir,
+            "epochs":     args.epochs,
+            "batch_size": args.batch_size,
+            "lr":         args.lr,
+            "d_model":    args.d_model,
+            "n_layers":   args.n_layers,
+            "dropout":    args.dropout,
+        })
+
+        if args.mode == "train":
+            train(cfg)
+        elif args.mode == "predict":
+            if args.input is None:
+                raise ValueError("--input must be provided in predict mode")
+            clf   = DoSClassifier(args.output_dir)
+            df    = pd.read_csv(args.input)
+            preds = clf.predict(df)
+            probs = clf.predict_proba(df)
+            df["prediction"] = preds
+            df["confidence"] = probs.max(axis=1)
+            out_path = Path(args.output_dir) / "predictions.csv"
+            df.to_csv(out_path, index=False)
+            print(f"\nPredictions saved → {out_path}")
+            print(df[["prediction", "confidence"]].value_counts().head(20).to_string())
