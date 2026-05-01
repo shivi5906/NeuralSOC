@@ -1,0 +1,12 @@
+{
+  "input_shape": [
+    10,
+    85
+  ],
+  "num_classes": 2,
+  "dropout_rate": 0.35,
+  "focal_gamma": 2.0,
+  "l2_reg": 0.0001,
+  "learning_rate": 0.0003,
+  "use_top2_metric": false
+}
